@@ -1,82 +1,57 @@
 # Claude Session Cleaner
 
-Automatically request deletion of **Anthropic-stored Claude Code sessions** on a randomized schedule.
+An unofficial Windows 11 tool that periodically clicks **Delete sessions stored by Anthropic** in [Claude Code settings](https://claude.ai/settings/claude-code). It does not delete local `~/.claude` transcripts, Claude.ai chats, or Claude Code web/cloud sessions.
 
-This is an independent, unofficial tool. It uses the **Delete sessions stored by Anthropic** control at [Claude Code settings](https://claude.ai/settings/claude-code) through Playwright. It does **not** use undocumented Anthropic APIs.
+## How it works
 
-## What it does
+- **Triggers:** Claude Code `SessionStart` (new and resumed local sessions), Windows sign-in, and a lightweight Windows check every 30 minutes.
+- **Schedule:** each deletion attempt sets an independent random deadline **2–6 hours** later. Each trigger checks that deadline; before it, the process exits immediately. No persistent Python loop.
+- **Deletion:** when due, a **headless** Playwright browser uses your separately signed-in Claude profile to click the existing Anthropic setting and confirm. You do not have to open the browser yourself each time.
+- **Safety:** the tool does not touch your local Claude Code data, does not upload credentials, and refuses to click if the target or confirmation cannot be identified. Only one attempt can run at a time.
 
-- Opens the Claude Code settings page with a dedicated, persistent browser profile.
-- Finds the exact session-deletion setting and confirms only a session-related deletion dialog.
-- Repeats at a **newly sampled interval after every attempt** (default **2–6 hours**), including a randomized delay before the first attempt.
-- Leaves local Claude Code sessions (`~/.claude`) untouched.
-- Stores authentication **locally**, never in GitHub Actions or repository files.
-- Stops the current attempt if authentication expires or UI selectors become ambiguous; keeps a local, rotating log.
-- Prevents two instances from using the same browser profile at once.
+Actual execution may be up to about 30 minutes later than the random deadline when Claude Code isn't opened. Sleeping/offline computers can delay it further. The first `--check` after setup attempts immediately. After an unsuccessful attempt, the next retry also follows a random 2–6-hour deadline; see the log if authentication expires.
 
-**Not covered:** Claude Code on the web sessions, Claude.ai chat history, local session transcripts, and any data Anthropic is required to retain under its policies.
+There is **no evidence** that deleting stored sessions prevents account restrictions or improves Anthropic's risk assessment. UI acceptance is not proof of full server-side erasure. Browser automation can break when Claude changes its interface. This is not an official Anthropic tool.
 
-**Important:** Deleting a stored session does **not** establish that Anthropic immediately purges every copy or log. There is **no evidence** that scheduling these deletions improves account standing or prevents account restrictions. Automation itself may fail or trigger service restrictions. Do not treat it as a risk-control bypass.
+## Set up (Windows 11)
 
-## Windows 11 quick start
+Install Python 3 (with the `py` launcher), then clone/download this repository.
 
-Install [Python 3](https://www.python.org/downloads/windows/) (enable the `py` launcher), then:
+1. Run `setup-and-login.cmd`. It installs dependencies, opens a browser for **manual** Claude login, then does a **dry run** that does not delete anything.
+2. Run `test-once.cmd` once. It opens a visible browser and attempts one real deletion. Check that it targets **stored sessions**, never your account.
+3. Run `powershell -NoProfile -ExecutionPolicy Bypass -File .\install.ps1` to install both triggers for your Windows user. Administrator rights are not intended.
 
-1. Download or clone this repository.
-2. Double-click **`setup-and-login.cmd`**. It creates a project-local `.venv`, installs Playwright/Chromium, and opens a browser for a **manual** Claude login.
-3. The setup script runs a **dry run** to check the exact deletion control without clicking it.
-4. Double-click **`test-once.cmd`** to run **one real deletion request** with the browser visible. Check its output before scheduling.
-5. Double-click **`start-now.cmd`** to keep it running in the foreground. To start automatically when you sign into Windows, run `powershell -NoProfile -ExecutionPolicy Bypass -File .\register-startup.ps1`.
+The installer edits only `SessionStart` in your **user-level** `~/.claude/settings.json`, preserving other hooks and backing up the settings file. It also registers the Windows task **Claude Session Cleaner** (at sign-in + 30-minute checks). The installer removes a legacy `Claude Session Cleaner.lnk` startup shortcut left by v1, which ran a permanent loop.
 
-You can also invoke the Python entrypoint yourself:
+**You must run `install.ps1` on your own PC.** Committing a repo does not install a hook or scheduled task on your machine.
+
+## Commands
+
+Run these from the repository folder in PowerShell:
 
 ```powershell
-.\.venv\Scripts\python.exe cleaner.py --login
+.\.venv\Scripts\python.exe cleaner.py --status                   # local schedule
+.\.venv\Scripts\python.exe cleaner.py --check                    # run only if due
 .\.venv\Scripts\python.exe cleaner.py --once --dry-run --show-browser
-.\.venv\Scripts\python.exe cleaner.py --once --show-browser
-.\.venv\Scripts\python.exe cleaner.py --loop --min-hours 2 --max-hours 6
+.\.venv\Scripts\python.exe cleaner.py --once --show-browser      # force one real attempt
+.\.venv\Scripts\python.exe cleaner.py --login                    # refresh browser login
 ```
 
-To use a different interval, for example 3–9 hours:
+For a custom interval, both the Claude hook and Windows task can pass `--min-hours 3 --max-hours 9` in their `args`/`-Argument` values. Default: 2–6 hours.
 
-```powershell
-.\.venv\Scripts\python.exe cleaner.py --loop --min-hours 3 --max-hours 9
-```
+Logs and scheduling state: `%LOCALAPPDATA%\ClaudeSessionCleaner\`. Login cookies are stored separately in its `profile` directory. Never commit/share that profile. There are no GitHub Actions secrets, and CI does not access your Claude account.
 
-All delays are independently sampled from a uniform distribution; this is **not** a fixed cron schedule with a small random offset. Sleeping or shutting down your PC prevents execution until it resumes or you launch the app again.
+## Uninstall
 
-## Stop / uninstall
+Run `powershell -NoProfile -ExecutionPolicy Bypass -File .\uninstall.ps1` from the same checkout. This removes the installed hook and Windows task, preserving unrelated hooks and your local login profile. Delete `%LOCALAPPDATA%\ClaudeSessionCleaner` manually if you also want to erase local credentials and logs.
 
-- Foreground: press **Ctrl+C**.
-- Startup: run `powershell -NoProfile -ExecutionPolicy Bypass -File .\unregister-startup.ps1`; also stop any already running instance.
-- Authentication profile: `%LOCALAPPDATA%\ClaudeSessionCleaner\profile`.
-- Logs: `%LOCALAPPDATA%\ClaudeSessionCleaner\logs\cleaner.log`.
-- To completely remove the local tool, close it and delete its repo folder and `%LOCALAPPDATA%\ClaudeSessionCleaner`.
+## Implementation and limitations
 
-Do not upload the browser profile, cookies, or local logs to GitHub. GitHub Actions is used only to test the code, **never** to sign into Claude or delete sessions.
+- `cleaner.py`: `--check`, `--once`, `--login`, `--status`; persisted random deadline and one-instance lock.
+- `install.ps1` / `uninstall.ps1`: user-level Claude Code Hook and Windows scheduled task.
+- `setup-and-login.cmd`, `test-once.cmd`, `check-now.cmd`: Windows helpers.
+- `tests/`: offline scheduler tests; **real Claude UI is not tested in CI**.
 
-## Safety and troubleshooting
+Sources: [Claude Code SessionStart hooks](https://code.claude.com/docs/en/hooks#sessionstart), [Windows Task Scheduler triggers](https://learn.microsoft.com/en-us/powershell/module/scheduledtasks/new-scheduledtasktrigger), and [Playwright authentication](https://playwright.dev/python/docs/auth).
 
-The cleaner requires an exact visible label, a uniquely scoped delete button, and an explicit confirmation about **sessions**, not account deletion. It refuses to click unfamiliar text-entry confirmations. A successful attempt means the **UI accepted the deletion request**; it is not independent verification of server erasure.
-
-The browser UI can change without notice. If you see a `SafeStop` message or a failure in the log, run `--once --dry-run --show-browser`, verify the page manually, and adjust selectors only after inspecting the new UI. The project intentionally does not bypass captchas, 2FA, or other access controls.
-
-## Project files
-
-```text
-cleaner.py                 Main CLI, scheduler, and guarded browser automation
-requirements.txt           Python dependencies
-setup-and-login.cmd        Windows setup and manual sign-in
-test-once.cmd              One visible deletion attempt
-start-now.cmd              Foreground randomized loop
-register-startup.ps1       Run after Windows user sign-in
-unregister-startup.ps1     Remove startup registration
-tests/                     Offline tests (no Claude account required)
-.github/workflows/test.yml Lightweight tests, no Claude credentials
-```
-
-## Background
-
-The target setting is located at [Claude Code settings](https://claude.ai/settings/claude-code). This tool only automates that specific UI control; verify its current wording and behavior in your own signed-in browser.
-
-Not affiliated with Anthropic. Use at your own risk.
+MIT License. Not affiliated with Anthropic.
