@@ -77,6 +77,6 @@ tests/                     Offline tests (no Claude account required)
 
 ## Background
 
-The Claude Code setting is described in [anthropics/claude-code#65123](https://github.com/anthropics/claude-code/issues/65123): server-side copies are deleted, and local sessions are not affected. Cloud sessions are managed separately.
+The target setting is located at [Claude Code settings](https://claude.ai/settings/claude-code). This tool only automates that specific UI control; verify its current wording and behavior in your own signed-in browser.
 
 Not affiliated with Anthropic. Use at your own risk.
