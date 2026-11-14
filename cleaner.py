@@ -6,13 +6,15 @@ A UI submission is NOT proof of complete server-side erasure.
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import logging
 import os
 import re
 import secrets
 import sys
 import time
-from datetime import datetime, timedelta
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
@@ -26,6 +28,7 @@ BASE_DIR = Path(os.getenv("LOCALAPPDATA") or Path.home() / ".local" / "share") /
 PROFILE_DIR = BASE_DIR / "profile"
 LOG_FILE = BASE_DIR / "logs" / "cleaner.log"
 LOCK_FILE = BASE_DIR / "cleaner.lock"
+STATE_FILE = BASE_DIR / "state.json"
 
 
 class SafeStop(RuntimeError):
@@ -34,14 +37,10 @@ class SafeStop(RuntimeError):
 
 def setup_logging() -> None:
     LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s %(levelname)s %(message)s",
-        handlers=[
-            RotatingFileHandler(LOG_FILE, maxBytes=512_000, backupCount=3, encoding="utf-8"),
-            logging.StreamHandler(sys.stdout),
-        ],
-    )
+    handlers = [RotatingFileHandler(LOG_FILE, maxBytes=512_000, backupCount=3, encoding="utf-8")]
+    if sys.stdout is not None:
+        handlers.append(logging.StreamHandler(sys.stdout))
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", handlers=handlers)
 
 
 def validate_interval(min_hours: float, max_hours: float) -> None:
@@ -185,31 +184,43 @@ def login() -> None:
             context.close()
 
 
-def run_loop(min_hours: float, max_hours: float, show_browser: bool) -> None:
-    validate_interval(min_hours, max_hours)
-    logging.info("Started, sampling a new random delay between %.2f and %.2f hours", min_hours, max_hours)
-    while True:
-        delay = sample_delay_seconds(min_hours, max_hours)
-        when = datetime.now() + timedelta(seconds=delay)
-        logging.info("Next attempt at %s (%.2f hours)", when.isoformat(timespec="seconds"), delay / 3600)
-        time.sleep(delay)
-        try:
-            attempt_cleanup(show_browser=show_browser)
-        except SafeStop as exc:
-            logging.warning("Skipped safely: %s", exc)
-        except Exception as exc:
-            # Avoid logging browser error detail, page text, or authentication state.
-            logging.error("Attempt failed (%s). Check login or UI with --dry-run.", type(exc).__name__)
+def read_state() -> dict:
+    if not STATE_FILE.exists():
+        return {}
+    try:
+        data = json.loads(STATE_FILE.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("Expected JSON object")
+        return data
+    except (ValueError, OSError) as exc:
+        raise SafeStop("Invalid schedule state; inspect state.json") from exc
+
+
+def save_state(state: dict) -> None:
+    temporary = STATE_FILE.with_suffix(".tmp")
+    temporary.write_text(json.dumps(state, indent=2) + "\n", encoding="utf-8")
+    os.replace(temporary, STATE_FILE)
+
+
+def is_due(state: dict, now: float) -> bool:
+    return now >= float(state.get("next_due_at", 0))
+
+
+def format_time(timestamp) -> str:
+    if not timestamp:
+        return "never"
+    return datetime.fromtimestamp(timestamp).astimezone().isoformat(timespec="seconds")
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Randomized Claude Code stored-session cleanup")
+    parser = argparse.ArgumentParser(description="Event-triggered Claude session cleanup")
     modes = parser.add_mutually_exclusive_group(required=True)
-    modes.add_argument("--login", action="store_true", help="Manual sign-in to local browser profile")
-    modes.add_argument("--once", action="store_true", help="One cleanup attempt")
-    modes.add_argument("--loop", action="store_true", help="Repeated cleanup at independently random intervals")
-    parser.add_argument("--dry-run", action="store_true", help="Locate control without deleting (once only)")
-    parser.add_argument("--show-browser", action="store_true", help="Show browser for inspection")
+    modes.add_argument("--login", action="store_true", help="Manual sign-in")
+    modes.add_argument("--once", action="store_true", help="Force one attempt")
+    modes.add_argument("--check", action="store_true", help="Run only if random deadline passed")
+    modes.add_argument("--status", action="store_true", help="Inspect saved schedule")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--show-browser", action="store_true")
     parser.add_argument("--min-hours", type=float, default=2)
     parser.add_argument("--max-hours", type=float, default=6)
     args = parser.parse_args()
@@ -219,31 +230,47 @@ def main() -> int:
         validate_interval(args.min_hours, args.max_hours)
     except ValueError as exc:
         parser.error(str(exc))
-
     setup_logging()
     BASE_DIR.mkdir(parents=True, exist_ok=True)
-    lock = FileLock(str(LOCK_FILE))
     try:
-        with lock.acquire(timeout=0):
+        with FileLock(str(LOCK_FILE)).acquire(timeout=0):
             if args.login:
                 login()
-            elif args.once:
+                return 0
+            state = read_state()
+            if args.status:
+                print("Last attempt:", format_time(state.get("last_attempt_at")))
+                print("Last result:", state.get("last_result", "never"))
+                print("Next due:", format_time(state.get("next_due_at")))
+                return 0
+            if args.check and not is_due(state, time.time()):
+                return 0
+            result = "submitted"
+            try:
                 attempt_cleanup(dry_run=args.dry_run, show_browser=args.show_browser)
-            else:
-                run_loop(args.min_hours, args.max_hours, args.show_browser)
+            except SafeStop as exc:
+                result = "skipped"
+                logging.warning("Skipped safely: %s", exc)
+            except Exception as exc:
+                result = "failed"
+                logging.error("Attempt failed (%s); use --once --dry-run --show-browser", type(exc).__name__)
+            if not args.dry_run:
+                now = time.time()
+                state.update(last_attempt_at=now, last_result=result,
+                             next_due_at=now + sample_delay_seconds(args.min_hours, args.max_hours))
+                save_state(state)
+                logging.info("Next due: %s", format_time(state["next_due_at"]))
+            return 0 if result == "submitted" else 1
     except FileLockTimeout:
-        logging.error("Another cleaner process is active. Stop it before starting another.")
-        return 2
+        return 0
     except SafeStop as exc:
-        logging.error("Skipped safely: %s", exc)
+        logging.error("Stopped safely: %s", exc)
         return 1
     except KeyboardInterrupt:
-        logging.info("Stopped by user")
         return 0
     except Exception as exc:
-        logging.error("Failed (%s). Run a visible dry run to diagnose.", type(exc).__name__)
+        logging.error("Failed (%s)", type(exc).__name__)
         return 1
-    return 0
 
 
 if __name__ == "__main__":
