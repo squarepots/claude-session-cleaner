@@ -93,35 +93,35 @@ def target_button(page):
 
 
 def confirmation_dialog(page):
-    for role in ("alertdialog", "dialog"):
-        dialog = unique_visible(page.get_by_role(role))
-        if dialog is not None:
-            return dialog
-    return None
+    locator = page.locator('[role="dialog"], [role="alertdialog"]')
+    try:
+        locator.first.wait_for(state="visible", timeout=10000)
+    except PlaywrightTimeoutError as exc:
+        raise SafeStop("Expected confirmation did not appear") from exc
+    dialog = unique_visible(locator)
+    if dialog is None:
+        raise SafeStop("Confirmation dialog missing or ambiguous")
+    return dialog
 
 
 def confirm_html_dialog(page) -> None:
     dialog = confirmation_dialog(page)
-    if dialog is None:
-        raise SafeStop("No recognized session confirmation; outcome unknown")
-
     words = dialog.inner_text(timeout=2500)
-    if not re.search(r"sessions?", words, re.I):
+    if not re.search(r"\\bsessions?\\b", words, re.I):
         raise SafeStop("Confirmation did not mention sessions")
-    if re.search(r"delete\s+(?:your\s+)?account", words, re.I):
-        raise SafeStop("Refusing account deletion")
+    if re.search(r"\\baccount\\b", words, re.I):
+        raise SafeStop("Refusing dialog mentioning account")
     if dialog.locator("input:visible").count() > 0:
         raise SafeStop("Confirmation requires text input; manual review required")
-
     buttons = dialog.get_by_role(
-        "button", name=re.compile(r"^\s*(?:delete|delete\s+(?:all\s+)?sessions|confirm)\s*$", re.I)
+        "button", name=re.compile(r"^\\s*(?:delete|delete\\s+(?:all\\s+)?sessions|confirm)\\s*$", re.I)
     )
     button = unique_visible(buttons)
     if button is None or not button.is_enabled():
         raise SafeStop("Confirmation Delete button missing or ambiguous")
-    button.click(timeout=10_000)
+    button.click(timeout=10000)
     try:
-        dialog.wait_for(state="hidden", timeout=15_000)
+        dialog.wait_for(state="hidden", timeout=15000)
     except PlaywrightTimeoutError as exc:
         raise SafeStop("Confirmation did not close; request not confirmed by UI") from exc
 
