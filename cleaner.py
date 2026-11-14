@@ -107,14 +107,14 @@ def confirmation_dialog(page):
 def confirm_html_dialog(page) -> None:
     dialog = confirmation_dialog(page)
     words = dialog.inner_text(timeout=2500)
-    if not re.search(r"\\bsessions?\\b", words, re.I):
+    if not re.search(r"\bsessions?\b", words, re.I):
         raise SafeStop("Confirmation did not mention sessions")
-    if re.search(r"\\baccount\\b", words, re.I):
+    if re.search(r"\baccount\b", words, re.I):
         raise SafeStop("Refusing dialog mentioning account")
     if dialog.locator("input:visible").count() > 0:
         raise SafeStop("Confirmation requires text input; manual review required")
     buttons = dialog.get_by_role(
-        "button", name=re.compile(r"^\\s*(?:delete|delete\\s+(?:all\\s+)?sessions|confirm)\\s*$", re.I)
+        "button", name=re.compile(r"^\s*(?:delete|delete\s+(?:all\s+)?sessions|confirm)\s*$", re.I)
     )
     button = unique_visible(buttons)
     if button is None or not button.is_enabled():
