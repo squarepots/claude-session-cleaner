@@ -6,10 +6,10 @@ py -3 -m venv .venv || goto :err
 ".venv\Scripts\python.exe" -m playwright install chromium || goto :err
 ".venv\Scripts\python.exe" cleaner.py --login || goto :err
 ".venv\Scripts\python.exe" cleaner.py --once --dry-run --show-browser || goto :err
-echo Setup and dry run complete. Run test-once.cmd to request deletion once.
+echo Login and dry run done. Use test-once.cmd, then install.ps1.
 pause
 exit /b 0
 :err
-echo Setup or verification failed. Review the messages above.
+echo Setup or dry run failed.
 pause
 exit /b 1
